@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Boids · 鸟群模拟</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fcfcfb; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hint { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 13px "Microsoft YaHei", sans-serif; color: rgba(40,50,65,.35); letter-spacing: .08em;
+    pointer-events: none; user-select: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let W, H, DPR;
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener("resize", resize); resize();
+
+// 两套配色：white 护眼白 / green 深灰绿。按 1、2 或 T 切换；Lively 里在「自定义」面板选择
+const THEMES = {
+  white: { bg: "#f7f7f5", bird: "rgba(38,52,72,0.88)",    trail: "70,95,125",   trailA: 0.22 },
+  green: { bg: "#344138", bird: "rgba(140,166,150,0.85)", trail: "112,138,122", trailA: 0.22 },
+};
+const NAMES = Object.keys(THEMES);
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+let TH = THEMES[new URLSearchParams(location.search).get("theme")] || THEMES[store.get("boids-theme")] || THEMES.white;
+let themeKey = NAMES.find(k => THEMES[k] === TH);
+function setTheme(k) {
+  if (!THEMES[k]) return;
+  TH = THEMES[k]; themeKey = k; store.set("boids-theme", k);
+  document.body.style.background = TH.bg;
+}
+document.body.style.background = TH.bg;
+addEventListener("keydown", e => {
+  if (e.key === "t" || e.key === "T") setTheme(NAMES[(NAMES.indexOf(themeKey) + 1) % NAMES.length]);
+  else if (NAMES[+e.key - 1]) setTheme(NAMES[+e.key - 1]);
+});
+// Lively 在用户修改自定义选项时回调此函数
+window.livelyPropertyListener = (name, val) => { if (name === "theme") setTheme(NAMES[val]); };
+
+const N = 320, TRAIL = 16, VIEW = 55, SEP = 20, MAXV = 3.2, MINV = 1.8, MAXF = 0.06;
+const boids = Array.from({ length: N }, () => {
+  const a = Math.random() * Math.PI * 2;
+  return { x: Math.random() * W, y: Math.random() * H, vx: Math.cos(a) * 2, vy: Math.sin(a) * 2, tr: [] };
+});
+
+const mouse = { x: 0, y: 0, in: false, down: false };
+cv.addEventListener("mousemove", e => { mouse.x = e.clientX; mouse.y = e.clientY; mouse.in = true; });
+cv.addEventListener("mouseleave", () => mouse.in = false);
+cv.addEventListener("mousedown", () => mouse.down = true);
+addEventListener("mouseup", () => mouse.down = false);
+let paused = false;
+addEventListener("keydown", e => { if (e.code === "Space") { paused = !paused; e.preventDefault(); } });
+
+// 空间网格：邻居查询从 O(n²) 降到近似 O(n)
+const CELL = VIEW;
+function step() {
+  const cols = Math.ceil(W / CELL) + 1, rows = Math.ceil(H / CELL) + 1;
+  const grid = Array.from({ length: cols * rows }, () => []);
+  for (const b of boids) grid[((b.y / CELL) | 0) * cols + ((b.x / CELL) | 0)]?.push(b);
+
+  for (const b of boids) {
+    let sx = 0, sy = 0, ax = 0, ay = 0, cx = 0, cy = 0, n = 0;
+    const gx = (b.x / CELL) | 0, gy = (b.y / CELL) | 0;
+    for (let j = gy - 1; j <= gy + 1; j++) for (let i = gx - 1; i <= gx + 1; i++) {
+      if (i < 0 || j < 0 || i >= cols || j >= rows) continue;
+      for (const o of grid[j * cols + i]) {
+        if (o === b) continue;
+        const dx = o.x - b.x, dy = o.y - b.y, d2 = dx * dx + dy * dy;
+        if (d2 > VIEW * VIEW) continue;
+        n++; ax += o.vx; ay += o.vy; cx += o.x; cy += o.y;
+        if (d2 < SEP * SEP && d2 > 0) { sx -= dx / d2; sy -= dy / d2; }
+      }
+    }
+    let fx = 0, fy = 0;
+    if (n) {
+      const steer = (tx, ty, w) => {
+        const m = Math.hypot(tx, ty) || 1;
+        let ux = tx / m * MAXV - b.vx, uy = ty / m * MAXV - b.vy;
+        const f = Math.hypot(ux, uy);
+        if (f > MAXF) { ux *= MAXF / f; uy *= MAXF / f; }
+        fx += ux * w; fy += uy * w;
+      };
+      steer(ax / n, ay / n, 1.0);
+      steer(cx / n - b.x, cy / n - b.y, 0.8);
+      steer(sx, sy, 2.2);
+    }
+    // 边缘柔性转向，避免鸟群撞墙或突然瞬移
+    const M = 80, T = 0.08;
+    if (b.x < M) fx += T; else if (b.x > W - M) fx -= T;
+    if (b.y < M) fy += T; else if (b.y > H - M) fy -= T;
+    if (mouse.in) {
+      const dx = mouse.x - b.x, dy = mouse.y - b.y, d = Math.hypot(dx, dy) || 1;
+      if (mouse.down) { if (d < 180) { fx -= dx / d * 0.35; fy -= dy / d * 0.35; } }
+      else if (d < 320) { fx += dx / d * 0.03; fy += dy / d * 0.03; }
+    }
+    b.vx += fx; b.vy += fy;
+    const sp = Math.hypot(b.vx, b.vy) || 1, c = Math.min(MAXV, Math.max(MINV, sp)) / sp;
+    b.vx *= c; b.vy *= c;
+  }
+  for (const b of boids) {
+    b.tr.push(b.x, b.y);
+    if (b.tr.length > TRAIL * 2) b.tr.splice(0, 2);
+    b.x += b.vx; b.y += b.vy;
+  }
+}
+
+function draw(t) {
+  ctx.fillStyle = TH.bg;
+  ctx.fillRect(0, 0, W, H);
+  ctx.lineCap = "round";
+  // 尾迹：每只鸟的历史位置分段绘制，越旧越淡，背景始终保持纯净
+  ctx.lineWidth = 1;
+  for (const b of boids) {
+    const p = b.tr, n = p.length / 2;
+    for (let i = 1; i < n; i++) {
+      ctx.strokeStyle = `rgba(${TH.trail},${(TH.trailA * i / n).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(p[i * 2 - 2], p[i * 2 - 1]);
+      ctx.lineTo(p[i * 2], p[i * 2 + 1]);
+      ctx.stroke();
+    }
+  }
+  for (const b of boids) {
+    const ang = Math.atan2(b.vy, b.vx);
+    ctx.fillStyle = TH.bird;
+    ctx.save();
+    ctx.translate(b.x, b.y); ctx.rotate(ang);
+    ctx.beginPath();
+    ctx.moveTo(6, 0); ctx.lineTo(-4, 2.2); ctx.lineTo(-2, 0); ctx.lineTo(-4, -2.2);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function loop(t) {
+  if (!paused) { step(); draw(t); }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

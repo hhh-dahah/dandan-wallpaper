@@ -1,0 +1,8 @@
+{
+  "theme": {
+    "type": "dropdown",
+    "text": "配色",
+    "value": 0,
+    "items": ["护眼白", "深灰绿"]
+  }
+}
